@@ -36,7 +36,7 @@ API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# --- RATE LIMITING (Security against DoS) ---
+# --- RATE LIMITING ---
 rate_limit_store = defaultdict(list)
 def check_rate_limit(chat_id):
     now = time.time()
@@ -45,8 +45,7 @@ def check_rate_limit(chat_id):
     rate_limit_store[chat_id].append(now)
     return True
 
-# --- SENIOR DEV: DATABASE CONTEXT MANAGER ---
-# This guarantees connections are closed even if the code crashes, preventing Neon DB limits.
+# --- DATABASE CONTEXT MANAGER ---
 @contextmanager
 def get_db():
     conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -80,7 +79,7 @@ def init_db():
         c.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", ("admin", default_hash))
         conn.commit()
 
-        # Seed Inventory (Laptops & Accessories)
+        # Seed Inventory
         items = []
         laptops = ["HP 250 G9 (i5/8GB/256GB)", "HP EliteBook 840 (i7/16GB/512GB)", "Dell Inspiron 15 (i5/8GB/512GB)", 
                    "Dell XPS 13 (i7/16GB/1TB)", "Lenovo ThinkPad T14 (i7/16GB/512GB)", "MacBook Air M1 (8GB/256GB)", 
@@ -134,19 +133,30 @@ def clear_state(chat_id):
         conn.cursor().execute("DELETE FROM user_state WHERE chat_id=%s", (chat_id,))
         conn.commit()
 
-# --- FLASK APP & SECURITY CONFIG ---
+# --- FLASK APP ---
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
-# Senior Dev: Secure session cookies to prevent XSS theft
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
-app.config['SESSION_COOKIE_SECURE'] = True # Requires HTTPS (which Render provides)
+app.config['SESSION_COOKIE_SECURE'] = True
 
-# Senior Dev: Prevent Information Disclosure (Don't leak stack traces to users)
 @app.errorhandler(500)
 def internal_error(error):
     logger.error(f"Internal Server Error: {error}", exc_info=True)
     return "Something went wrong. The admin has been notified.", 500
+
+# --- DEBUG TEST ROUTE ---
+@app.route('/test')
+def test():
+    logger.info("✅ TEST ROUTE ACCESSED - Flask is working!")
+    try:
+        with get_db() as conn:
+            count = conn.cursor().execute("SELECT COUNT(*) FROM users").fetchone()[0]
+            logger.info(f"✅ Database connection successful! Users in DB: {count}")
+        return f"✅ Flask is working! Database connected. Users in DB: {count}"
+    except Exception as e:
+        logger.error(f"❌ Database connection failed: {e}", exc_info=True)
+        return f"❌ Database error: {e}", 500
 
 # --- WEB DASHBOARD ROUTES ---
 def login_required(f):
@@ -158,21 +168,38 @@ def login_required(f):
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
+    logger.info(f"🔐 LOGIN ROUTE ACCESSED - Method: {request.method}")
+    
     if request.method == 'POST':
+        logger.info("📝 Processing POST login request")
         username = request.form.get('username')
         password = request.form.get('password')
-        with get_db() as conn:
-            user = conn.cursor().execute("SELECT id, password_hash FROM users WHERE username=%s", (username,)).fetchone()
-        if user and check_password_hash(user['password_hash'], password):
-            session['user_id'] = user['id']
-            session['username'] = username
-            return redirect(url_for('dashboard'))
-        return render_template('login.html', error="Invalid credentials")
+        logger.info(f"👤 Login attempt for username: {username}")
+        
+        try:
+            with get_db() as conn:
+                user = conn.cursor().execute("SELECT id, password_hash FROM users WHERE username=%s", (username,)).fetchone()
+                logger.info(f"🔍 Database query completed. User found: {user is not None}")
+            
+            if user and check_password_hash(user['password_hash'], password):
+                logger.info("✅ Password verified successfully")
+                session['user_id'] = user['id']
+                session['username'] = username
+                return redirect(url_for('dashboard'))
+            else:
+                logger.info("❌ Invalid credentials")
+                return render_template('login.html', error="Invalid credentials")
+        except Exception as e:
+            logger.error(f"💥 Login error: {e}", exc_info=True)
+            return f"Database error during login: {e}", 500
+    
+    logger.info("📄 Rendering login page (GET request)")
     return render_template('login.html', error=None)
 
 @app.route('/dashboard')
 @login_required
 def dashboard():
+    logger.info(f"📊 Dashboard accessed by user: {session.get('username')}")
     with get_db() as conn:
         c = conn.cursor()
         stock_stats = c.execute("SELECT COUNT(*) as total_items, COALESCE(SUM(quantity),0) as total_stock FROM stock").fetchone()
@@ -185,22 +212,7 @@ def logout():
     session.clear()
     return redirect(url_for('login'))
 
-# --- TELEGRAM WEBHOOK & UI ---
-def build_main_menu(chat_id):
-    is_owner = chat_id in OWNER_IDS
-    buttons = [
-        [{"text": "📋 View Stock", "callback_data": "m_view"}, {"text": "💰 Record Sale", "callback_data": "m_sale"}],
-        [{"text": "📜 Recent Sales", "callback_data": "m_recent"}, {"text": "📊 Daily Summary", "callback_data": "m_summary"}]
-    ]
-    if is_owner:
-        buttons.extend([
-            [{"text": "➕ Add Stock", "callback_data": "m_add"}, {"text": "✏️ Edit Item", "callback_data": "m_edit"}],
-            [{"text": "🗑️ Remove Item", "callback_data": "m_remove"}, {"text": "⚠️ Low Stock", "callback_data": "m_low"}],
-            [{"text": "⏳ Pending Payments", "callback_data": "m_pending"}]
-        ])
-    text = "📊 *LAPYPLUG — MAIN MENU*\n\nWelcome. What would you like to do?"
-    return text, {"inline_keyboard": buttons}
-
+# --- TELEGRAM WEBHOOK ---
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
     if WEBHOOK_SECRET and request.headers.get('X-Telegram-Bot-Api-Secret-Token') != WEBHOOK_SECRET:
@@ -236,7 +248,7 @@ def setup_webhook():
 def index():
     return "LapyPlug Backend API is live and secure."
 
-# --- TELEGRAM BUTTON HANDLER (Full Logic) ---
+# --- TELEGRAM BUTTON HANDLER ---
 def button_handler(query):
     chat_id = query['message']['chat']['id']
     msg_id = query['message']['message_id']
@@ -278,16 +290,16 @@ def button_handler(query):
             item = conn.cursor().execute("SELECT * FROM stock WHERE id=%s", (item_id,)).fetchone()
         save_state(chat_id, f"sq_{item_id}")
         edit_message(chat_id, msg_id, f"💰 *{item['item_name']}*\nAvailable: {item['quantity']}\n\n*Type quantity:*", {"inline_keyboard": [[{"text": "❌ Cancel", "callback_data": "m_menu"}]]})
-    elif data.startswith("sw_"): # Walk-in sale
+    elif data.startswith("sw_"):
         parts = data.split("_")
         process_sale(chat_id, int(parts[1]), int(parts[2]), "Walk-in", 'paid', msg_id)
-    elif data.startswith("sp_") or data.startswith("scred_"): # Credit/Paid sale
+    elif data.startswith("sp_") or data.startswith("scred_"):
         status = 'paid' if data.startswith("sp_") else 'pending'
         parts = data.split("_")
         state, d = get_state(chat_id)
         process_sale(chat_id, int(parts[1]), int(parts[2]), d.get('cust', "Walk-in"), status, msg_id)
         clear_state(chat_id)
-    elif data.startswith("st_"): # Enter customer info
+    elif data.startswith("st_"):
         parts = data.split("_")
         save_state(chat_id, f"st_{parts[1]}_{parts[2]}")
         edit_message(chat_id, msg_id, "✍️ *Type Customer Name & Number:*", {"inline_keyboard": [[{"text": "❌ Cancel", "callback_data": "m_menu"}]]})
@@ -317,6 +329,21 @@ def button_handler(query):
         edit_message(chat_id, msg_id, f"✅ *Added {d['name']}!*", {"inline_keyboard": [[{"text": "🏠 Menu", "callback_data": "m_menu"}]]})
     else:
         edit_message(chat_id, msg_id, "❓ Unknown action.", {"inline_keyboard": [[{"text": "🏠 Menu", "callback_data": "m_menu"}]]})
+
+def build_main_menu(chat_id):
+    is_owner = chat_id in OWNER_IDS
+    buttons = [
+        [{"text": "📋 View Stock", "callback_data": "m_view"}, {"text": "💰 Record Sale", "callback_data": "m_sale"}],
+        [{"text": "📜 Recent Sales", "callback_data": "m_recent"}, {"text": "📊 Daily Summary", "callback_data": "m_summary"}]
+    ]
+    if is_owner:
+        buttons.extend([
+            [{"text": "➕ Add Stock", "callback_data": "m_add"}, {"text": "✏️ Edit Item", "callback_data": "m_edit"}],
+            [{"text": "🗑️ Remove Item", "callback_data": "m_remove"}, {"text": "⚠️ Low Stock", "callback_data": "m_low"}],
+            [{"text": "⏳ Pending Payments", "callback_data": "m_pending"}]
+        ])
+    text = "📊 *LAPYPLUG — MAIN MENU*\n\nWelcome. What would you like to do?"
+    return text, {"inline_keyboard": buttons}
 
 def process_sale(chat_id, item_id, qty, cust, status, msg_id):
     with get_db() as conn:
@@ -350,7 +377,7 @@ def handle_text_message(chat_id, text):
     state, d = get_state(chat_id)
     if not state: return
 
-    if state.startswith("sq_"): # Sale quantity
+    if state.startswith("sq_"):
         item_id = int(state.split("_")[1])
         try:
             qty = int(text)
@@ -363,7 +390,7 @@ def handle_text_message(chat_id, text):
             [{"text": "❌ Cancel", "callback_data": "m_menu"}]
         ]}
         send_message(chat_id, f"✅ Qty: *{qty}*\n\nWho is buying?", markup)
-    elif state.startswith("st_"): # Customer info
+    elif state.startswith("st_"):
         parts = state.split("_")
         d = {'cust': text}
         save_state(chat_id, f"spay_{parts[1]}_{parts[2]}", d)
@@ -372,7 +399,7 @@ def handle_text_message(chat_id, text):
             [{"text": "⏳ Pay Later", "callback_data": f"scred_{parts[1]}_{parts[2]}"}]
         ]}
         send_message(chat_id, f"✅ Customer: *{text}*\n\nPayment status?", markup)
-    elif state == "an_name": # Add stock name
+    elif state == "an_name":
         d = {'name': text}
         save_state(chat_id, "an_qty", d)
         send_message(chat_id, f"✅ Item: *{text}*\n\n*Quantity?*")
