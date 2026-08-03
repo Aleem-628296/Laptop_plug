@@ -5,7 +5,9 @@ import requests
 import time
 from collections import defaultdict
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, render_template, redirect, url_for, session
+from werkzeug.security import generate_password_hash, check_password_hash
+import secrets
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -31,7 +33,7 @@ OWNER_IDS = [int(id.strip()) for id in os.getenv("OWNER_ID", "").split(",") if i
 SECRETARY_IDS = [int(id.strip()) for id in os.getenv("SECRETARY_ID", "").split(",") if id.strip()]
 NOTIFICATION_IDS = [int(id.strip()) for id in os.getenv("NOTIFICATION_IDS", "").split(",") if id.strip()]
 ALLOWED_IDS = OWNER_IDS + SECRETARY_IDS
-API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+API_URL = f"htfrom flask import Flask, request, jsonify, render_template, redirect, url_for, session
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -381,6 +383,15 @@ def init_db():
             """, item)
         except Exception as e:
             logger.error(f"Seed error: {e}")
+    # ADD THIS AT THE END OF init_db() BEFORE conn.commit()
+    from werkzeug.security import generate_password_hash
+    # Default credentials: admin / Victory2024!
+    default_hash = generate_password_hash("Victory2024!")
+    try:
+        c.execute("INSERT INTO users (username, password_hash) VALUES (%s, %s) ON CONFLICT (username) DO NOTHING", 
+                  ("admin", default_hash))
+    except Exception as e:
+        logger.error(f"User seed error: {e}")
     
     conn.commit()
     c.close()
@@ -1467,6 +1478,7 @@ def handle_text_message(chat_id, text):
 
 # --- FLASK APP ---
 app = Flask(__name__)
+app.secret_key = os.getenv("FLASK_SECRET_KEY", secrets.token_hex(32))
 
 @app.route('/webhook', methods=['POST'])
 def telegram_webhook():
@@ -1510,6 +1522,69 @@ def setup_webhook():
 def index():
     return "Victory Venture StockMind Bot is running!"
 
+# --- WEB DASHBOARD ROUTES ---
+
+def login_required(f):
+    """Decorator to protect routes. If no session, kick to login."""
+    from functools import wraps
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if 'user_id' not in session:
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT id, password_hash FROM users WHERE username=%s", (username,))
+        user = c.fetchone()
+        conn.close()
+        
+        # Security: check_password_hash prevents timing attacks and verifies the hash
+        if user and check_password_hash(user['password_hash'], password):
+            session['user_id'] = user['id']
+            session['username'] = username
+            return redirect(url_for('dashboard'))
+        else:
+            return render_template('login.html', error="Invalid username or password")
+            
+    return render_template('login.html', error=None)
+
+@app.route('/dashboard')
+@login_required
+def dashboard():
+    conn = get_db()
+    c = conn.cursor()
+    
+    # Fetch summary stats
+    c.execute("SELECT COUNT(*) as total_items, SUM(quantity) as total_stock FROM stock")
+    stock_stats = c.fetchone()
+    
+    c.execute("SELECT COUNT(*) as total_sales, COALESCE(SUM(profit), 0) as total_profit FROM sales")
+    sales_stats = c.fetchone()
+    
+    # Fetch recent sales
+    c.execute("SELECT item_name, quantity, profit, customer_info, sold_at FROM sales ORDER BY sold_at DESC LIMIT 5")
+    recent_sales = c.fetchall()
+    
+    conn.close()
+    
+    return render_template('dashboard.html', 
+                           stock_stats=stock_stats, 
+                           sales_stats=sales_stats, 
+                           recent_sales=recent_sales,
+                           username=session.get('username'))
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
 if __name__ == '__main__':
     init_db()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))

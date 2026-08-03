@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LapyPlug - Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; background: #f4f4f9; margin: 0; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+        .stats { display: flex; gap: 20px; margin-bottom: 30px; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); flex: 1; }
+        .card h3 { margin: 0; color: #666; font-size: 14px; }
+        .card p { margin: 10px 0 0; font-size: 24px; font-weight: bold; color: #333; }
+        table { width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        th, td { padding: 12px 15px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #007bff; color: white; }
+        a { color: #007bff; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 LapyPlug Dashboard</h1>
+        <div>
+            <span>Welcome, {{ username }} | </span>
+            <a href="/logout">Logout</a>
+        </div>
+    </div>
+
+    <div class="stats">
+        <div class="card">
+            <h3>TOTAL INVENTORY ITEMS</h3>
+            <p>{{ stock_stats['total_items'] }}</p>
+        </div>
+        <div class="card">
+            <h3>TOTAL UNITS IN STOCK</h3>
+            <p>{{ stock_stats['total_stock'] or 0 }}</p>
+        </div>
+        <div class="card">
+            <h3>TOTAL SALES RECORDED</h3>
+            <p>{{ sales_stats['total_sales'] }}</p>
+        </div>
+        <div class="card">
+            <h3>TOTAL PROFIT (GHS)</h3>
+            <p>{{ "%.2f"|format(sales_stats['total_profit']) }}</p>
+        </div>
+    </div>
+
+    <h2>Recent Sales</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Item</th>
+                <th>Customer</th>
+                <th>Qty</th>
+                <th>Profit (GHS)</th>
+                <th>Date</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for sale in recent_sales %}
+            <tr>
+                <td>{{ sale['item_name'] }}</td>
+                <td>{{ sale['customer_info'] }}</td>
+                <td>{{ sale['quantity'] }}</td>
+                <td>{{ "%.2f"|format(sale['profit']) }}</td>
+                <td>{{ sale['sold_at'] }}</td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="text-align:center;">No sales recorded yet.</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>
