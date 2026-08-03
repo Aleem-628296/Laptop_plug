@@ -6,11 +6,11 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from flask import Flask, request, jsonify, render_template, redirect, url_for, session
-from werkzeug.security import generate_password_hash, check_password_hash
-import secrets
 from dotenv import load_dotenv
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from werkzeug.security import generate_password_hash, check_password_hash
+import secrets
 
 # --- CONFIGURATION ---
 load_dotenv()
@@ -33,7 +33,7 @@ OWNER_IDS = [int(id.strip()) for id in os.getenv("OWNER_ID", "").split(",") if i
 SECRETARY_IDS = [int(id.strip()) for id in os.getenv("SECRETARY_ID", "").split(",") if id.strip()]
 NOTIFICATION_IDS = [int(id.strip()) for id in os.getenv("NOTIFICATION_IDS", "").split(",") if id.strip()]
 ALLOWED_IDS = OWNER_IDS + SECRETARY_IDS
-API_URL = f"htfrom flask import Flask, request, jsonify, render_template, redirect, url_for, session
+API_URL = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
 
